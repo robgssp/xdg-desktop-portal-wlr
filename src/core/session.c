@@ -40,6 +40,7 @@ static const sd_bus_vtable session_vtable[] = {
 };
 
 struct xdpw_session *xdpw_session_create(struct xdpw_state *state, sd_bus *bus, char *object_path) {
+	logprint(DEBUG, "HEY HERE I AM HERE session created: %s", object_path);
 	struct xdpw_session *sess = calloc(1, sizeof(struct xdpw_session));
 
 	sess->session_handle = object_path;

@@ -2,6 +2,7 @@
 
 #include <time.h>
 
+#include "wayland-util.h"
 #include "wlr_virtual_pointer.h"
 #include "xdpw.h"
 
@@ -238,6 +239,7 @@ static int method_remotedesktop_start(sd_bus_message *msg, void *data, sd_bus_er
 	return 0;
 }
 
+
 static int method_remotedesktop_notify_pointer_motion(sd_bus_message *msg,
 		void *data, sd_bus_error *ret_error) {
 	struct xdpw_state *state = data;
@@ -255,16 +257,13 @@ static int method_remotedesktop_notify_pointer_motion(sd_bus_message *msg,
 	}
 	logprint(DEBUG, "remotedesktop: npm: session_handle: %s", session_handle);
 
-	wl_list_for_each_reverse(sess, &state->xdpw_sessions, link) {
-		if (strcmp(sess->session_handle, session_handle) == 0) {
-			break;
-		}
-	}
+	sess = get_session_from_handle(state, session_handle);
 	if (!sess) {
 		logprint(WARN, "remotedesktop: npm: session not found");
 		return -1;
 	}
 	logprint(DEBUG, "remotedesktop: npm: session found");
+
 
 	ret = sd_bus_message_skip(msg, "a{sv}");
 	if (ret < 0) {
@@ -303,11 +302,7 @@ static int method_remotedesktop_notify_pointer_motion_absolute(
 	}
 	logprint(DEBUG, "remotedesktop: npma: session_handle: %s", session_handle);
 
-	wl_list_for_each_reverse(sess, &state->xdpw_sessions, link) {
-		if (strcmp(sess->session_handle, session_handle) == 0) {
-			break;
-		}
-	}
+	sess = get_session_from_handle(state, session_handle);
 	if (!sess) {
 		logprint(WARN, "remotedesktop: npma: session not found");
 		return -1;
@@ -341,7 +336,7 @@ static int method_remotedesktop_notify_pointer_button(sd_bus_message *msg,
 	struct xdpw_state *state = data;
 
 	int ret = 0;
-	char *session_handle;
+	char *session_handle, *key;
 	struct xdpw_session *sess;
 	int32_t button;
 	uint32_t btn_state;
@@ -354,21 +349,39 @@ static int method_remotedesktop_notify_pointer_button(sd_bus_message *msg,
 	}
 	logprint(DEBUG, "remotedesktop: npb: session_handle: %s", session_handle);
 
-	wl_list_for_each_reverse(sess, &state->xdpw_sessions, link) {
-		if (strcmp(sess->session_handle, session_handle) == 0) {
-			break;
-		}
-	}
+	sess = get_session_from_handle(state, session_handle);
 	if (!sess) {
 		logprint(WARN, "remotedesktop: npb: session not found");
 		return -1;
 	}
 	logprint(DEBUG, "remotedesktop: npb: session found");
 
-	ret = sd_bus_message_skip(msg, "a{sv}");
+	ret = sd_bus_message_enter_container(msg, 'a', "{sv}");
 	if (ret < 0) {
 		return ret;
 	}
+	while ((ret = sd_bus_message_enter_container(msg, 'e', "sv")) > 0) {
+		ret = sd_bus_message_read(msg, "s", &key);
+		if (ret < 0) {
+			return ret;
+		}
+
+		logprint(WARN, "remotedesktop: npb: unknown option: %s", key);
+		sd_bus_message_skip(msg, "v");
+
+		ret = sd_bus_message_exit_container(msg);
+		if (ret < 0) {
+			return ret;
+		}
+	}
+	if (ret < 0) {
+		return ret;
+	}
+	ret = sd_bus_message_exit_container(msg);
+	if (ret < 0) {
+		return ret;
+	}
+
 	ret = sd_bus_message_read(msg, "i", &button);
 	if (ret < 0) {
 		return ret;
@@ -378,10 +391,25 @@ static int method_remotedesktop_notify_pointer_button(sd_bus_message *msg,
 		return ret;
 	}
 
-	zwlr_virtual_pointer_v1_button(sess->remotedesktop_data.virtual_pointer,
-		get_timestamp_ms(&sess->remotedesktop_data),
-		button, btn_state);
-	return 0;
+	uint32_t timestamp = get_timestamp_ms(&sess->remotedesktop_data);
+
+	logprint(DEBUG, "remotedesktop: npb: button %d, state %d at %u", (int)button, (int)btn_state, timestamp);
+	if (btn_state == 1) {
+		zwlr_virtual_pointer_v1_button(
+			sess->remotedesktop_data.virtual_pointer,
+			timestamp,
+			button, 0);
+		zwlr_virtual_pointer_v1_button(
+			sess->remotedesktop_data.virtual_pointer,
+			timestamp,
+			button, 1);
+	} else {
+		zwlr_virtual_pointer_v1_button(
+			sess->remotedesktop_data.virtual_pointer,
+			timestamp,
+			button, 0);
+        }
+        return 0;
 }
 
 static int method_remotedesktop_notify_pointer_axis(sd_bus_message *msg,
@@ -401,11 +429,7 @@ static int method_remotedesktop_notify_pointer_axis(sd_bus_message *msg,
 	}
 	logprint(DEBUG, "remotedesktop: npa: session_handle: %s", session_handle);
 
-	wl_list_for_each_reverse(sess, &state->xdpw_sessions, link) {
-		if (strcmp(sess->session_handle, session_handle) == 0) {
-			break;
-		}
-	}
+	sess = get_session_from_handle(state, session_handle);
 	if (!sess) {
 		logprint(WARN, "remotedesktop: npa: session not found");
 		return -1;
@@ -452,6 +476,8 @@ static int method_remotedesktop_notify_pointer_axis(sd_bus_message *msg,
 		return ret;
 	}
 
+	logprint(DEBUG, "remotedesktop: npa: dx %f, dy %f", dx, dy);
+
 	zwlr_virtual_pointer_v1_axis(sess->remotedesktop_data.virtual_pointer,
 		get_timestamp_ms(&sess->remotedesktop_data),
 		WL_POINTER_AXIS_VERTICAL_SCROLL, wl_fixed_from_double(dy * 10));
@@ -488,11 +514,7 @@ static int method_remotedesktop_notify_pointer_axis_discrete(
 	}
 	logprint(DEBUG, "remotedesktop: npad: session_handle: %s", session_handle);
 
-	wl_list_for_each_reverse(sess, &state->xdpw_sessions, link) {
-		if (strcmp(sess->session_handle, session_handle) == 0) {
-			break;
-		}
-	}
+	sess = get_session_from_handle(state, session_handle);
 	if (!sess) {
 		logprint(WARN, "remotedesktop: npad: session not found");
 		return -1;
